@@ -1,0 +1,172 @@
+.valve-status {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.valve-card {
+  background: #0d1f33;
+  border-radius: 10px;
+  padding: 16px;
+  border: 1px solid #1e3448;
+  position: relative;
+  overflow: hidden;
+  transition: all 0.3s;
+}
+
+.valve-card.open {
+  border-color: #1976d2;
+  box-shadow: 0 0 20px rgba(25, 118, 210, 0.2);
+}
+
+.valve-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.valve-icon {
+  font-size: 32px;
+}
+
+.valve-info {
+  flex: 1;
+}
+
+.valve-name {
+  font-size: 15px;
+  font-weight: 600;
+  color: #e0e0e0;
+}
+
+.valve-id {
+  font-size: 12px;
+  color: #546e7a;
+  margin-top: 2px;
+  font-family: 'Courier New', monospace;
+}
+
+.valve-status-badge {
+  padding: 4px 12px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.valve-status-badge.open {
+  background: rgba(25, 118, 210, 0.2);
+  color: #42a5f5;
+}
+
+.valve-status-badge.closed {
+  background: rgba(120, 144, 156, 0.2);
+  color: #78909c;
+}
+
+.valve-details {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 14px;
+  padding: 10px;
+  background: #0a1929;
+  border-radius: 6px;
+}
+
+.detail-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+}
+
+.detail-label {
+  color: #546e7a;
+}
+
+.detail-value {
+  color: #b0bec5;
+  font-weight: 500;
+}
+
+.valve-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.action-btn {
+  flex: 1;
+  padding: 10px 12px;
+  border: none;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.trigger-btn {
+  background: #ff9800;
+  color: #fff;
+}
+
+.trigger-btn:hover {
+  background: #ffa726;
+}
+
+.trigger-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.trigger-btn.triggering {
+  animation: pulse 1s ease-in-out infinite;
+}
+
+.toggle-btn {
+  background: #2a4a6a;
+  color: #b0bec5;
+}
+
+.toggle-btn:hover {
+  background: #3a5a7a;
+}
+
+.toggle-btn.open {
+  background: rgba(244, 67, 54, 0.2);
+  color: #f44336;
+  border: 1px solid rgba(244, 67, 54, 0.3);
+}
+
+.toggle-btn.open:hover {
+  background: rgba(244, 67, 54, 0.3);
+}
+
+.valve-active-indicator {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 8px;
+  background: rgba(25, 118, 210, 0.1);
+  border-radius: 6px;
+  font-size: 12px;
+  color: #42a5f5;
+}
+
+.active-pulse {
+  width: 8px;
+  height: 8px;
+  background: #42a5f5;
+  border-radius: 50%;
+  animation: pulse 1.5s ease-in-out infinite;
+  box-shadow: 0 0 8px #42a5f5;
+}
+
+.no-valves {
+  text-align: center;
+  color: #546e7a;
+  padding: 30px 0;
+  font-size: 14px;
+}
