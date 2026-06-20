@@ -10,6 +10,7 @@ import { interceptApi } from './services/api'
 
 function App() {
   const [scanResult, setScanResult] = useState(null)
+  const [scanImage, setScanImage] = useState(null)
   const [activeIntercepts, setActiveIntercepts] = useState([])
   const [showAlert, setShowAlert] = useState(false)
   const [currentIntercept, setCurrentIntercept] = useState(null)
@@ -37,8 +38,11 @@ function App() {
     }
   }
 
-  const handleScanComplete = (result) => {
+  const handleScanComplete = (result, imageSrc = null) => {
     setScanResult(result)
+    if (imageSrc) {
+      setScanImage(imageSrc)
+    }
     if (result.intercept_result?.intercepted) {
       setCurrentIntercept({
         tracking_number: result.ocr_result.tracking_number,
@@ -128,7 +132,7 @@ function App() {
                 <h2>📦 当前包裹信息</h2>
               </div>
               <div className="panel-content">
-                <PackageInfo scanResult={scanResult} />
+                <PackageInfo scanResult={scanResult} scanImage={scanImage} />
               </div>
             </div>
           )}

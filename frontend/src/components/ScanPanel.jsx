@@ -1,10 +1,12 @@
 import { useState, useRef } from 'react'
 import { scanApi } from '../services/api'
+import HeatmapOverlay from './HeatmapOverlay'
 import '../styles/ScanPanel.css'
 
 function ScanPanel({ onScanComplete }) {
   const [isUploading, setIsUploading] = useState(false)
   const [previewImage, setPreviewImage] = useState(null)
+  const [scanHeatmap, setScanHeatmap] = useState(null)
   const [scanHistory, setScanHistory] = useState([])
   const fileInputRef = useRef(null)
 
@@ -39,8 +41,10 @@ function ScanPanel({ onScanComplete }) {
         ...prev.slice(0, 9)
       ])
 
+      setScanHeatmap(result.ocr_result?.heatmap || null)
+
       if (onScanComplete) {
-        onScanComplete(result)
+        onScanComplete(result, e.target.result)
       }
     } catch (error) {
       console.error('扫描失败:', error)
@@ -82,8 +86,10 @@ function ScanPanel({ onScanComplete }) {
         ...prev.slice(0, 9)
       ])
 
+      setScanHeatmap(result.ocr_result?.heatmap || null)
+
       if (onScanComplete) {
-        onScanComplete(result)
+        onScanComplete(result, previewImage)
       }
     } catch (error) {
       console.error('扫描失败:', error)
@@ -111,7 +117,7 @@ function ScanPanel({ onScanComplete }) {
         >
           {previewImage ? (
             <div className="preview-container">
-              <img src={previewImage} alt="预览" className="preview-image" />
+              <HeatmapOverlay imageSrc={previewImage} heatmap={scanHeatmap} />
               {isUploading && (
                 <div className="upload-overlay">
                   <div className="loading-spinner"></div>

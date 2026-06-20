@@ -1,9 +1,11 @@
+import HeatmapOverlay from './HeatmapOverlay'
 import '../styles/PackageInfo.css'
 
-function PackageInfo({ scanResult }) {
+function PackageInfo({ scanResult, scanImage }) {
   if (!scanResult) return null
 
   const { ocr_result, intercept_result } = scanResult
+  const heatmap = ocr_result?.heatmap
 
   const getStatusColor = (status) => {
     switch (status) {
@@ -37,6 +39,13 @@ function PackageInfo({ scanResult }) {
           </div>
         )}
       </div>
+
+      {scanImage && (
+        <div className="waybill-heatmap-box">
+          <div className="box-title">🔍 面单质检热力图</div>
+          <HeatmapOverlay imageSrc={scanImage} heatmap={heatmap} />
+        </div>
+      )}
 
       <div className="info-grid">
         <div className="info-field">

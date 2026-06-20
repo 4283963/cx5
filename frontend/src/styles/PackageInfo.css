@@ -2,6 +2,21 @@
   font-size: 14px;
 }
 
+.waybill-heatmap-box {
+  background: #f7f9fb;
+  border: 1px solid #e0e6ed;
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 16px;
+}
+
+.waybill-heatmap-box .box-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #455a64;
+  margin-bottom: 8px;
+}
+
 .package-header {
   display: flex;
   align-items: center;

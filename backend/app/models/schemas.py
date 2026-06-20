@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List, Any
 from pydantic import BaseModel, Field
 
 
@@ -25,11 +25,39 @@ class Package(PackageBase):
         from_attributes = True
 
 
+class HeatmapRegion(BaseModel):
+    x: float = Field(..., description="区域左上角 x 比例 (0-1)")
+    y: float = Field(..., description="区域左上角 y 比例 (0-1)")
+    w: float = Field(..., description="区域宽度比例 (0-1)")
+    h: float = Field(..., description="区域高度比例 (0-1)")
+    confidence: float = Field(..., description="该区域最差置信度")
+    issue_type: str = Field(..., description="问题类型: unclear / damaged")
+    issue_label: str = Field(..., description="问题中文标签")
+
+
+class HeatmapStats(BaseModel):
+    avg_confidence: float
+    problem_region_count: int
+    problem_ratio: float
+    timesteps: int
+
+
+class HeatmapData(BaseModel):
+    enabled: bool = False
+    grid: List[List[float]] = Field(default_factory=list, description="2D 问题分数网格 (rows x cols, 0-1)")
+    grid_rows: int = 0
+    grid_cols: int = 0
+    regions: List[HeatmapRegion] = Field(default_factory=list)
+    stats: Optional[HeatmapStats] = None
+    image_size: Optional[dict] = None
+
+
 class ScanResult(BaseModel):
     tracking_number: str
     destination_city: str
     confidence: float
     processing_time: float
+    heatmap: Optional[HeatmapData] = None
 
 
 class ScanRecordBase(BaseModel):

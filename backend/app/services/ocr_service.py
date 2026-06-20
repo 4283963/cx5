@@ -85,12 +85,26 @@ class BatchInferenceEngine:
             batch_tensor = torch.cat(padded_tensors, dim=0)
 
             with torch.no_grad():
-                outputs = self.model(batch_tensor)
+                result = self.model(batch_tensor, return_intermediates=True)
+
+            outputs = result["output"]
+            spatial = result["spatial"]
 
             for i, item in enumerate(batch_items):
-                output = outputs[i:i + 1]
+                real_w = widths[i]
+                real_t = max(1, real_w // 4 - 1)
+                real_spat_w = max(1, real_w // 4)
+                output_i = outputs[i:i + 1, :real_t, :]
+                spat_i = spatial[i:i + 1, :, :, :real_spat_w]
+
                 req_id = item["req_id"]
-                decode_result = item["decode_fn"](output)
+                decode_fn = item["decode_fn"]
+                decode_result = decode_fn(
+                    output_i,
+                    spat_i,
+                    item.get("orig_w"),
+                    item.get("orig_h"),
+                )
 
                 with self._lock:
                     self.results[req_id] = decode_result
@@ -108,7 +122,7 @@ class BatchInferenceEngine:
                 if event:
                     event.set()
 
-    def submit(self, tensor: torch.Tensor, decode_fn) -> Tuple[str, asyncio.Event]:
+    def submit(self, tensor: torch.Tensor, decode_fn, orig_w=None, orig_h=None) -> Tuple[str, asyncio.Event]:
         import uuid
         req_id = uuid.uuid4().hex
         event = asyncio.Event()
@@ -118,6 +132,8 @@ class BatchInferenceEngine:
             "tensor": tensor,
             "decode_fn": decode_fn,
             "event": event,
+            "orig_w": orig_w,
+            "orig_h": orig_h,
         })
 
         with self._lock:
@@ -295,7 +311,7 @@ class OCRService:
             avg_time = sum(all_times) / len(all_times)
             print(f"[OCRService] 预热完成 | 平均推理耗时: {avg_time:.1f}ms ({len(all_times)} 次采样)")
 
-    def _preprocess_image(self, image_bytes: bytes) -> torch.Tensor:
+    def _preprocess_image(self, image_bytes: bytes) -> Tuple[torch.Tensor, int, int]:
         img = Image.open(io.BytesIO(image_bytes)).convert("L")
         img_array = np.array(img)
 
@@ -306,9 +322,10 @@ class OCRService:
         binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
 
         img = Image.fromarray(binary)
+        orig_w, orig_h = img.size
 
-        ratio = settings.CRNN_IMAGE_HEIGHT / float(img.size[1])
-        new_width = int(img.size[0] * ratio)
+        ratio = settings.CRNN_IMAGE_HEIGHT / float(orig_h)
+        new_width = int(orig_w * ratio)
         min_width = settings.CRNN_IMAGE_HEIGHT
         max_width = 1024
         new_width = max(min_width, min(max_width, new_width))
@@ -318,9 +335,15 @@ class OCRService:
         img_array = np.array(img, dtype=np.float32) / 255.0
         img_array = (img_array - 0.5) / 0.5
         img_tensor = torch.from_numpy(img_array).unsqueeze(0).unsqueeze(0)
-        return img_tensor.to(self.device, non_blocking=True)
+        return img_tensor.to(self.device, non_blocking=True), orig_w, orig_h
 
-    def _decode_output(self, output: torch.Tensor) -> Tuple[str, float]:
+    def _decode_with_heatmap(
+        self,
+        output: torch.Tensor,
+        spatial: Optional[torch.Tensor],
+        orig_w: Optional[int],
+        orig_h: Optional[int],
+    ) -> Dict[str, Any]:
         output = output.squeeze(0)
         probs = F.softmax(output, dim=1)
         max_probs, preds = torch.max(probs, dim=1)
@@ -341,9 +364,202 @@ class OCRService:
 
         text = "".join(chars)
         avg_confidence = sum(confidences) / len(confidences) if confidences else 0.0
-        return text, avg_confidence
 
-    def _mock_recognize(self, image_bytes: bytes) -> Tuple[str, str, float]:
+        heatmap = self._build_attention_heatmap(
+            max_probs, preds, spatial, orig_w, orig_h
+        )
+
+        return {
+            "text": text,
+            "confidence": avg_confidence,
+            "heatmap": heatmap,
+        }
+
+    def _build_attention_heatmap(
+        self,
+        max_probs: torch.Tensor,
+        preds: torch.Tensor,
+        spatial: Optional[torch.Tensor],
+        orig_w: Optional[int],
+        orig_h: Optional[int],
+    ) -> Dict[str, Any]:
+        try:
+            T = int(max_probs.size(0))
+            conf = max_probs.detach().float().cpu().numpy()
+        except Exception as e:
+            print(f"[Heatmap] 置信度提取失败: {e}")
+            return self._empty_heatmap(orig_w, orig_h)
+
+        UNCLEAR_TH = 0.5
+        DAMAGED_TH = 0.75
+
+        low_act = None
+        h_s = 4
+        if spatial is not None:
+            try:
+                act = spatial.squeeze(0).float().mean(dim=0).cpu().numpy()
+                h_s, w_s = act.shape
+                a_min, a_max = float(act.min()), float(act.max())
+                if a_max - a_min > 1e-6:
+                    norm_act = (act - a_min) / (a_max - a_min)
+                else:
+                    norm_act = np.zeros_like(act)
+                low_act = 1.0 - norm_act
+                if w_s != T and T > 0:
+                    low_act = cv2.resize(low_act, (T, h_s), interpolation=cv2.INTER_LINEAR)
+            except Exception as e:
+                print(f"[Heatmap] 空间特征处理失败: {e}")
+                low_act = None
+
+        GRID_ROWS = 16
+        GRID_COLS = min(48, max(8, T))
+        if GRID_COLS <= 0:
+            return self._empty_heatmap(orig_w, orig_h)
+
+        conf_bins = np.linspace(0, T, GRID_COLS + 1).astype(int)
+        col_conf = np.zeros(GRID_COLS, dtype=np.float32)
+        for c in range(GRID_COLS):
+            s = conf_bins[c]
+            e = max(conf_bins[c] + 1, conf_bins[c + 1])
+            col_conf[c] = float(np.mean(conf[s:e])) if e > s else 0.0
+        col_problem_conf = 1.0 - col_conf
+
+        if low_act is not None:
+            try:
+                low_act_grid = cv2.resize(low_act, (GRID_COLS, GRID_ROWS), interpolation=cv2.INTER_LINEAR)
+                low_act_grid = np.clip(low_act_grid.astype(np.float32), 0.0, 1.0)
+            except Exception:
+                low_act_grid = np.full((GRID_ROWS, GRID_COLS), 0.3, dtype=np.float32)
+        else:
+            low_act_grid = np.full((GRID_ROWS, GRID_COLS), 0.3, dtype=np.float32)
+
+        col_problem_conf_2d = np.tile(col_problem_conf.reshape(1, GRID_COLS), (GRID_ROWS, 1))
+        grid = 0.65 * col_problem_conf_2d + 0.35 * low_act_grid
+        grid = np.clip(grid, 0.0, 1.0)
+
+        regions = []
+        t = 0
+        while t < T:
+            if conf[t] < DAMAGED_TH:
+                t0 = t
+                worst_conf = float(conf[t])
+                worst_type = "unclear" if conf[t] < UNCLEAR_TH else "damaged"
+                t += 1
+                while t < T and conf[t] < DAMAGED_TH:
+                    worst_conf = min(worst_conf, float(conf[t]))
+                    if conf[t] < UNCLEAR_TH:
+                        worst_type = "unclear"
+                    t += 1
+                t1 = min(t, T)
+                x_start = t0 / T
+                x_end = t1 / T
+
+                if low_act is not None and (t1 - t0) > 0:
+                    col_strip = low_act[:, t0:t1].mean(axis=1)
+                    thr = float(col_strip.mean()) + 0.5 * float(col_strip.std() + 1e-6)
+                    bad_rows = np.where(col_strip > max(0.3, thr - 0.1))[0]
+                    if len(bad_rows) > 0:
+                        y_start = float(bad_rows.min()) / h_s
+                        y_end = float(bad_rows.max() + 1) / h_s
+                        y_start = max(0.0, y_start - 0.05)
+                        y_end = min(1.0, y_end + 0.05)
+                    else:
+                        y_start, y_end = 0.05, 0.95
+                else:
+                    y_start, y_end = 0.05, 0.95
+
+                issue_label = {"unclear": "看不清", "damaged": "污损/划痕"}.get(worst_type, "异常")
+                regions.append({
+                    "x": round(x_start, 4),
+                    "y": round(y_start, 4),
+                    "w": round(x_end - x_start, 4),
+                    "h": round(y_end - y_start, 4),
+                    "confidence": round(worst_conf, 4),
+                    "issue_type": worst_type,
+                    "issue_label": issue_label,
+                })
+            else:
+                t += 1
+
+        avg_conf = float(np.mean(conf)) if T > 0 else 0.0
+        problem_count = len(regions)
+
+        return {
+            "enabled": True,
+            "grid": grid.tolist(),
+            "grid_rows": GRID_ROWS,
+            "grid_cols": GRID_COLS,
+            "regions": regions,
+            "stats": {
+                "avg_confidence": round(avg_conf, 4),
+                "problem_region_count": problem_count,
+                "problem_ratio": round(problem_count / max(1, T), 4),
+                "timesteps": T,
+            },
+            "image_size": {"width": orig_w, "height": orig_h},
+        }
+
+    def _empty_heatmap(self, orig_w=None, orig_h=None) -> Dict[str, Any]:
+        return {
+            "enabled": False,
+            "grid": [],
+            "grid_rows": 0,
+            "grid_cols": 0,
+            "regions": [],
+            "stats": {
+                "avg_confidence": 0.0,
+                "problem_region_count": 0,
+                "problem_ratio": 0.0,
+                "timesteps": 0,
+            },
+            "image_size": {"width": orig_w, "height": orig_h},
+        }
+
+    def _mock_heatmap(self, orig_w=None, orig_h=None) -> Dict[str, Any]:
+        GRID_ROWS, GRID_COLS = 16, 48
+        grid = np.zeros((GRID_ROWS, GRID_COLS), dtype=np.float32)
+        regions = []
+        n = random.randint(1, 2)
+        for _ in range(n):
+            x = random.uniform(0.1, 0.7)
+            y = random.uniform(0.2, 0.6)
+            w = random.uniform(0.08, 0.18)
+            h = random.uniform(0.1, 0.25)
+            conf = random.uniform(0.2, 0.5)
+            itype = random.choice(["unclear", "damaged"])
+            regions.append({
+                "x": round(x, 4),
+                "y": round(y, 4),
+                "w": round(w, 4),
+                "h": round(h, 4),
+                "confidence": round(conf, 4),
+                "issue_type": itype,
+                "issue_label": "看不清" if itype == "unclear" else "污损/划痕",
+            })
+            c0 = int(x * GRID_COLS)
+            c1 = max(c0 + 1, int((x + w) * GRID_COLS))
+            r0 = int(y * GRID_ROWS)
+            r1 = max(r0 + 1, int((y + h) * GRID_ROWS))
+            for r in range(r0, r1):
+                for c in range(c0, c1):
+                    grid[r, c] = max(float(grid[r, c]), 1.0 - conf)
+
+        return {
+            "enabled": True,
+            "grid": grid.tolist(),
+            "grid_rows": GRID_ROWS,
+            "grid_cols": GRID_COLS,
+            "regions": regions,
+            "stats": {
+                "avg_confidence": 0.9,
+                "problem_region_count": len(regions),
+                "problem_ratio": round(len(regions) / GRID_COLS, 4),
+                "timesteps": GRID_COLS,
+            },
+            "image_size": {"width": orig_w, "height": orig_h},
+        }
+
+    def _mock_recognize(self, image_bytes: bytes) -> Tuple[str, str, float, Dict[str, Any]]:
         sample_waybills = [
             ("SF1234567890123", "北京市"),
             ("YT9876543210987", "上海市"),
@@ -362,7 +578,15 @@ class OCRService:
         tracking_number, city = sample_waybills[idx]
         confidence = random.uniform(0.88, 0.98)
 
-        return tracking_number, city, confidence
+        try:
+            with Image.open(io.BytesIO(image_bytes)) as im:
+                ow, oh = im.size
+        except Exception:
+            ow, oh = None, None
+
+        heatmap = self._mock_heatmap(ow, oh)
+
+        return tracking_number, city, confidence, heatmap
 
     def _extract_tracking_number(self, text: str) -> str:
         pattern = r'[A-Z]{2,3}\d{10,15}|[A-Z]{3,4}\d{9,13}'
@@ -382,53 +606,55 @@ class OCRService:
 
     async def recognize_waybill(self, image_bytes: bytes) -> Dict[str, Any]:
         start_time = time.time()
+        heatmap: Optional[Dict[str, Any]] = None
 
         if self._model_initialized and self.model is not None:
             try:
                 loop = asyncio.get_event_loop()
-                img_tensor = await loop.run_in_executor(
+                img_tensor, orig_w, orig_h = await loop.run_in_executor(
                     self._preprocess_executor,
                     self._preprocess_image,
-                    image_bytes
+                    image_bytes,
                 )
 
                 if self.batch_engine:
-                    req_id, event = self.batch_engine.submit(img_tensor, self._decode_output)
+                    req_id, event = self.batch_engine.submit(
+                        img_tensor, self._decode_with_heatmap, orig_w, orig_h
+                    )
                     try:
                         await asyncio.wait_for(event.wait(), timeout=30.0)
                     except asyncio.TimeoutError:
                         raise TimeoutError("OCR 批处理推理超时 (30s)")
 
                     decode_result = self.batch_engine.get_result(req_id)
-                    if decode_result is None or "error" in decode_result:
-                        raise RuntimeError(decode_result.get("error", "推理失败"))
+                    if decode_result is None or "error" in (decode_result or {}):
+                        err = decode_result.get("error", "推理失败") if decode_result else "推理失败"
+                        raise RuntimeError(err)
 
-                    text, confidence = decode_result
+                    text = decode_result["text"]
+                    confidence = decode_result["confidence"]
+                    heatmap = decode_result.get("heatmap")
                 else:
                     def _run_inference():
-                        if self.device.type == "cuda":
-                            starter = torch.cuda.Event(enable_timing=True)
-                            ender = torch.cuda.Event(enable_timing=True)
-                            starter.record()
-                            with torch.no_grad():
-                                out = self.model(img_tensor)
-                            ender.record()
-                            torch.cuda.synchronize()
-                        else:
-                            with torch.no_grad():
-                                out = self.model(img_tensor)
-                        return self._decode_output(out)
+                        with torch.no_grad():
+                            res = self.model(img_tensor, return_intermediates=True)
+                        return self._decode_with_heatmap(
+                            res["output"], res["spatial"], orig_w, orig_h
+                        )
 
-                    text, confidence = await loop.run_in_executor(None, _run_inference)
+                    dec = await loop.run_in_executor(None, _run_inference)
+                    text = dec["text"]
+                    confidence = dec["confidence"]
+                    heatmap = dec.get("heatmap")
 
                 tracking_number = self._extract_tracking_number(text)
                 city = self._extract_city(text)
 
             except Exception as e:
                 print(f"[OCRService] CRNN 识别出错，降级模拟模式: {e}")
-                tracking_number, city, confidence = self._mock_recognize(image_bytes)
+                tracking_number, city, confidence, heatmap = self._mock_recognize(image_bytes)
         else:
-            tracking_number, city, confidence = self._mock_recognize(image_bytes)
+            tracking_number, city, confidence, heatmap = self._mock_recognize(image_bytes)
 
         processing_time = time.time() - start_time
 
@@ -436,7 +662,8 @@ class OCRService:
             "tracking_number": tracking_number,
             "destination_city": city,
             "confidence": round(confidence, 4),
-            "processing_time": round(processing_time, 4)
+            "processing_time": round(processing_time, 4),
+            "heatmap": heatmap,
         }
 
     def get_performance_stats(self) -> Dict[str, Any]:

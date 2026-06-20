@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { scanApi } from '../services/api'
+import HeatmapOverlay from './HeatmapOverlay'
 import '../styles/ConveyorBelt.css'
 
 function ConveyorBelt({ onScanComplete }) {
@@ -10,6 +11,8 @@ function ConveyorBelt({ onScanComplete }) {
   const canvasRef = useRef(null)
   const videoRef = useRef(null)
   const [useCamera, setUseCamera] = useState(false)
+  const [lastScanImage, setLastScanImage] = useState(null)
+  const [lastHeatmap, setLastHeatmap] = useState(null)
 
   useEffect(() => {
     if (useCamera && cameraActive) {
@@ -94,8 +97,11 @@ function ConveyorBelt({ onScanComplete }) {
               : pkg
           ))
 
+          setLastScanImage(imageData)
+          setLastHeatmap(result.ocr_result?.heatmap || null)
+
           if (onScanComplete) {
-            onScanComplete(result)
+            onScanComplete(result, imageData)
           }
         } else {
           const sampleImages = [
@@ -118,8 +124,11 @@ function ConveyorBelt({ onScanComplete }) {
               : pkg
           ))
 
+          setLastScanImage(randomImage)
+          setLastHeatmap(result.ocr_result?.heatmap || null)
+
           if (onScanComplete) {
-            onScanComplete(result)
+            onScanComplete(result, randomImage)
           }
         }
       } catch (error) {
@@ -202,6 +211,18 @@ function ConveyorBelt({ onScanComplete }) {
             {isScanning ? '⏳ 扫描中...' : '🔍 开始扫描'}
           </button>
         </div>
+      </div>
+
+      <div className="qc-section">
+        <div className="qc-header">
+          <h3>🔍 质检热力图</h3>
+          {lastHeatmap?.enabled ? (
+            <span className="qc-hint">红色阴影区域为条码划痕/污损/看不清处</span>
+          ) : (
+            <span className="qc-hint muted">扫描后将显示异常区域</span>
+          )}
+        </div>
+        <HeatmapOverlay imageSrc={lastScanImage} heatmap={lastHeatmap} />
       </div>
 
       <div className="conveyor-section">

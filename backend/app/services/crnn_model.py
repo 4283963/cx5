@@ -1,3 +1,5 @@
+from typing import Dict, Optional, Union
+
 import torch
 import torch.nn as nn
 
@@ -58,8 +60,18 @@ class CRNN(nn.Module):
 
         self.fc = nn.Linear(hidden_size * 2, num_classes)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        conv = self.cnn(x)
+    def forward(
+        self,
+        x: torch.Tensor,
+        return_intermediates: bool = False
+    ) -> Union[torch.Tensor, Dict[str, torch.Tensor]]:
+        spatial_feat: Optional[torch.Tensor] = None
+        for i, layer in enumerate(self.cnn):
+            x = layer(x)
+            if return_intermediates and i == 11:
+                spatial_feat = x.detach().clone()
+
+        conv = x
         batch_size, channels, height, width = conv.size()
 
         conv = conv.permute(0, 3, 1, 2)
@@ -72,4 +84,10 @@ class CRNN(nn.Module):
         output = self.fc(recurrent)
         output = output.log_softmax(dim=2)
 
+        if return_intermediates:
+            return {
+                "output": output,
+                "spatial": spatial_feat if spatial_feat is not None else conv.detach(),
+                "seq_len": width,
+            }
         return output
